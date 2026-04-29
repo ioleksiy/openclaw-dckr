@@ -110,11 +110,26 @@ jobs:
             ALT_TAG="v$TAG"
           fi
 
+          GHCR_SCOPE="repository:${{ env.IMAGE_NAME }}:pull"
+          GHCR_TOKEN=$(curl -fsSL "https://ghcr.io/token?scope=$GHCR_SCOPE" | jq -r '.token // empty')
+
+          # Fallback for registries/packages that require authenticated token exchange.
+          if [ -z "$GHCR_TOKEN" ]; then
+            GHCR_TOKEN=$(curl -fsSL \
+              -u "${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}" \
+              "https://ghcr.io/token?scope=$GHCR_SCOPE" | jq -r '.token // empty')
+          fi
+
+          if [ -z "$GHCR_TOKEN" ]; then
+            echo "Failed to obtain GHCR bearer token for scope: $GHCR_SCOPE" >&2
+            exit 1
+          fi
+
           check_manifest_tag() {
             local candidate="$1"
             curl -s -o /dev/null -w "%{http_code}" \
-              -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-              -H "Accept: application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json" \
+              -H "Authorization: Bearer $GHCR_TOKEN" \
+              -H "Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json" \
               "https://ghcr.io/v2/${{ env.IMAGE_NAME }}/manifests/$candidate"
           }
 
@@ -131,6 +146,9 @@ jobs:
 
           STATUS_SLIM_PRIMARY=$(check_manifest_tag "$TAG-slim")
           STATUS_SLIM_ALT=$(check_manifest_tag "$ALT_TAG-slim")
+
+          echo "Check status full: $TAG=$STATUS_FULL_PRIMARY, $ALT_TAG=$STATUS_FULL_ALT"
+          echo "Check status slim: $TAG-slim=$STATUS_SLIM_PRIMARY, $ALT_TAG-slim=$STATUS_SLIM_ALT"
 
           if [ "$STATUS_SLIM_PRIMARY" = "200" ] || [ "$STATUS_SLIM_ALT" = "200" ]; then
             SLIM_EXISTS=true
