@@ -135,6 +135,11 @@ jobs:
         run: |
           FORCE_REBUILD="${{ github.event.inputs.force_rebuild }}"
           TAG="${{ steps.package_tag.outputs.tag }}"
+          WANT_LATEST=false
+
+          if [[ "${{ github.event_name }}" == "schedule" || "${{ github.event.inputs.isLatest }}" == "true" ]]; then
+            WANT_LATEST=true
+          fi
 
           if [ "$FORCE_REBUILD" = "true" ]; then
             echo "full_exists=false" >> $GITHUB_OUTPUT
@@ -173,6 +178,17 @@ jobs:
               "https://ghcr.io/v2/${{ env.IMAGE_NAME }}/manifests/$candidate"
           }
 
+          get_manifest_digest() {
+            local candidate="$1"
+            curl -sI \
+              -H "Authorization: Bearer $GHCR_TOKEN" \
+              -H "Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json" \
+              "https://ghcr.io/v2/${{ env.IMAGE_NAME }}/manifests/$candidate" \
+              | tr -d '\r' \
+              | awk -F': ' 'tolower($1)=="docker-content-digest" {print $2}' \
+              | tail -n 1
+          }
+
           FULL_EXISTS=false
           SLIM_EXISTS=false
 
@@ -186,12 +202,62 @@ jobs:
 
           STATUS_SLIM_PRIMARY=$(check_manifest_tag "$TAG-slim")
           STATUS_SLIM_ALT=$(check_manifest_tag "$ALT_TAG-slim")
+          STATUS_LATEST=$(check_manifest_tag "latest")
+          STATUS_LATEST_SLIM=$(check_manifest_tag "latest-slim")
 
           echo "Check status full: $TAG=$STATUS_FULL_PRIMARY, $ALT_TAG=$STATUS_FULL_ALT"
           echo "Check status slim: $TAG-slim=$STATUS_SLIM_PRIMARY, $ALT_TAG-slim=$STATUS_SLIM_ALT"
+          if [ "$WANT_LATEST" = "true" ]; then
+            echo "Check status latest aliases: latest=$STATUS_LATEST, latest-slim=$STATUS_LATEST_SLIM"
+          fi
 
           if [ "$STATUS_SLIM_PRIMARY" = "200" ] || [ "$STATUS_SLIM_ALT" = "200" ]; then
             SLIM_EXISTS=true
+          fi
+
+          # For schedule/manual-latest runs, require latest aliases to exist too.
+          if [ "$WANT_LATEST" = "true" ]; then
+            if [ "$STATUS_LATEST" != "200" ]; then
+              FULL_EXISTS=false
+            fi
+
+            if [ "$STATUS_LATEST_SLIM" != "200" ]; then
+              SLIM_EXISTS=false
+            fi
+
+            TAG_DIGEST=""
+            if [ "$STATUS_FULL_PRIMARY" = "200" ]; then
+              TAG_DIGEST=$(get_manifest_digest "$TAG")
+            elif [ "$STATUS_FULL_ALT" = "200" ]; then
+              TAG_DIGEST=$(get_manifest_digest "$ALT_TAG")
+            fi
+
+            LATEST_DIGEST=""
+            if [ "$STATUS_LATEST" = "200" ]; then
+              LATEST_DIGEST=$(get_manifest_digest "latest")
+            fi
+
+            if [ -n "$TAG_DIGEST" ] && [ -n "$LATEST_DIGEST" ] && [ "$TAG_DIGEST" != "$LATEST_DIGEST" ]; then
+              echo "latest digest differs from target tag digest, will refresh latest"
+              FULL_EXISTS=false
+            fi
+
+            SLIM_TAG_DIGEST=""
+            if [ "$STATUS_SLIM_PRIMARY" = "200" ]; then
+              SLIM_TAG_DIGEST=$(get_manifest_digest "$TAG-slim")
+            elif [ "$STATUS_SLIM_ALT" = "200" ]; then
+              SLIM_TAG_DIGEST=$(get_manifest_digest "$ALT_TAG-slim")
+            fi
+
+            LATEST_SLIM_DIGEST=""
+            if [ "$STATUS_LATEST_SLIM" = "200" ]; then
+              LATEST_SLIM_DIGEST=$(get_manifest_digest "latest-slim")
+            fi
+
+            if [ -n "$SLIM_TAG_DIGEST" ] && [ -n "$LATEST_SLIM_DIGEST" ] && [ "$SLIM_TAG_DIGEST" != "$LATEST_SLIM_DIGEST" ]; then
+              echo "latest-slim digest differs from target slim tag digest, will refresh latest-slim"
+              SLIM_EXISTS=false
+            fi
           fi
 
           echo "full_exists=$FULL_EXISTS" >> $GITHUB_OUTPUT
