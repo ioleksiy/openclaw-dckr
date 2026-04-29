@@ -9,6 +9,11 @@ on:
         description: 'OpenClaw version tag to build (for example: v1.0.0). Leave empty to use latest stable upstream package tag.'
         required: false
         type: string
+      isLatest:
+        description: 'Also publish :latest and :latest-slim tags for this manual run.'
+        required: false
+        type: boolean
+        default: false
       force_rebuild:
         description: 'Build even when the image tag already exists in GHCR.'
         required: false
@@ -210,13 +215,17 @@ jobs:
         run: |
           IMAGE_BASE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
           TAG="${{ steps.package_tag.outputs.tag }}"
+          IS_LATEST=false
+
+          if [[ "${{ github.event_name }}" == "schedule" || "${{ github.event.inputs.isLatest }}" == "true" ]]; then
+            IS_LATEST=true
+          fi
 
           {
             echo "image_tags<<EOF"
             echo "$IMAGE_BASE:$TAG"
 
-            # Only automatic scheduled builds update :latest.
-            if [ "${{ github.event_name }}" = "schedule" ]; then
+            if [ "$IS_LATEST" = "true" ]; then
               echo "$IMAGE_BASE:latest"
             fi
 
@@ -229,13 +238,17 @@ jobs:
         run: |
           IMAGE_BASE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
           TAG="${{ steps.package_tag.outputs.tag }}"
+          IS_LATEST=false
+
+          if [[ "${{ github.event_name }}" == "schedule" || "${{ github.event.inputs.isLatest }}" == "true" ]]; then
+            IS_LATEST=true
+          fi
 
           {
             echo "image_tags<<EOF"
             echo "$IMAGE_BASE:$TAG-slim"
 
-            # Only automatic scheduled builds update :latest-slim.
-            if [ "${{ github.event_name }}" = "schedule" ]; then
+            if [ "$IS_LATEST" = "true" ]; then
               echo "$IMAGE_BASE:latest-slim"
             fi
 
@@ -285,3 +298,146 @@ jobs:
             OPENCLAW_INSTALL_BROWSER=0
           cache-from: type=gha,scope=slim
           cache-to: type=gha,mode=max,scope=slim
+
+      - name: Output image details
+        if: success()
+        run: |
+          TAG="${{ steps.package_tag.outputs.tag }}"
+          IMAGE_BASE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
+          IS_LATEST=false
+
+          if [[ "${{ github.event_name }}" == "schedule" || "${{ github.event.inputs.isLatest }}" == "true" ]]; then
+            IS_LATEST=true
+          fi
+
+          echo "### :rocket: Image workflow completed successfully!" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Tag:** \`$TAG\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Also tagged as latest:** \`$IS_LATEST\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "${{ steps.check.outputs.full_exists }}" = "true" ]; then
+            echo "**Full image:** already existed, no rebuild needed" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "**Full image:** \`$IMAGE_BASE:$TAG\`" >> "$GITHUB_STEP_SUMMARY"
+            if [ "$IS_LATEST" = "true" ]; then
+              echo "**Also available as:** \`$IMAGE_BASE:latest\`" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          fi
+
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "${{ steps.check.outputs.slim_exists }}" = "true" ]; then
+            echo "**Slim image:** already existed, no rebuild needed" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "**Slim image:** \`$IMAGE_BASE:$TAG-slim\`" >> "$GITHUB_STEP_SUMMARY"
+            if [ "$IS_LATEST" = "true" ]; then
+              echo "**Also available as:** \`$IMAGE_BASE:latest-slim\`" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          fi
+
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Platforms:** linux/amd64, linux/arm64" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Pull the image:" >> "$GITHUB_STEP_SUMMARY"
+          echo '```bash' >> "$GITHUB_STEP_SUMMARY"
+          echo "docker pull $IMAGE_BASE:$TAG" >> "$GITHUB_STEP_SUMMARY"
+          echo "docker pull $IMAGE_BASE:$TAG-slim" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Notify Slack (Success)
+        if: success() && env.SLACK_WEBHOOK_URL != '' && (steps.check.outputs.full_exists == 'false' || steps.check.outputs.slim_exists == 'false')
+        uses: slackapi/slack-github-action@v2.0.0
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        with:
+          webhook: ${{ env.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            {
+              "text": "✅ OpenClaw Docker Build Successful",
+              "blocks": [
+                {
+                  "type": "header",
+                  "text": {
+                    "type": "plain_text",
+                    "text": "✅ OpenClaw Docker Build Successful",
+                    "emoji": true
+                  }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Version:*\n`${{ steps.package_tag.outputs.tag }}`"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Latest:*\n`${{ github.event_name == 'schedule' || github.event.inputs.isLatest == 'true' }}`"
+                    }
+                  ]
+                },
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Image:*\n`${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.package_tag.outputs.tag }}`"
+                  }
+                },
+                {
+                  "type": "context",
+                  "elements": [
+                    {
+                      "type": "mrkdwn",
+                      "text": "<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Build Logs>"
+                    }
+                  ]
+                }
+              ]
+            }
+
+      - name: Notify Slack (Failure)
+        if: failure() && env.SLACK_WEBHOOK_URL != '' && (steps.check.outputs.full_exists == 'false' || steps.check.outputs.slim_exists == 'false')
+        uses: slackapi/slack-github-action@v2.0.0
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        with:
+          webhook: ${{ env.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            {
+              "text": "❌ OpenClaw Docker Build Failed",
+              "blocks": [
+                {
+                  "type": "header",
+                  "text": {
+                    "type": "plain_text",
+                    "text": "❌ OpenClaw Docker Build Failed",
+                    "emoji": true
+                  }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Version:*\n`${{ steps.package_tag.outputs.tag }}`"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Triggered by:*\n`${{ github.actor }}`"
+                    }
+                  ]
+                },
+                {
+                  "type": "context",
+                  "elements": [
+                    {
+                      "type": "mrkdwn",
+                      "text": "⚠️ <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Build Logs to debug>"
+                    }
+                  ]
+                }
+              ]
+            }
