@@ -90,30 +90,70 @@ jobs:
 
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
-      - name: Check if image already exists
+      - name: Check if images already exist
         id: check
         run: |
           FORCE_REBUILD="${{ github.event.inputs.force_rebuild }}"
+          TAG="${{ steps.package_tag.outputs.tag }}"
+
           if [ "$FORCE_REBUILD" = "true" ]; then
-            echo "exists=false" >> $GITHUB_OUTPUT
-            echo "Force rebuild enabled, will build regardless of current image"
+            echo "full_exists=false" >> $GITHUB_OUTPUT
+            echo "slim_exists=false" >> $GITHUB_OUTPUT
+            echo "Force rebuild enabled, will build full and slim variants"
             exit 0
           fi
 
-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
-            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            "https://ghcr.io/v2/${{ env.IMAGE_NAME }}/manifests/${{ steps.package_tag.outputs.tag }}")
-          if [ "$STATUS" = "200" ]; then
-            echo "exists=true" >> $GITHUB_OUTPUT
-            echo "Image already exists, skipping build"
+          ALT_TAG=""
+          if echo "$TAG" | grep -Eq '^v'; then
+            ALT_TAG="${TAG#v}"
           else
-            echo "exists=false" >> $GITHUB_OUTPUT
-            echo "Image not found, will build"
+            ALT_TAG="v$TAG"
           fi
 
-      - name: Prepare image tags
-        id: tags
-        if: steps.check.outputs.exists == 'false'
+          check_manifest_tag() {
+            local candidate="$1"
+            curl -s -o /dev/null -w "%{http_code}" \
+              -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+              -H "Accept: application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json" \
+              "https://ghcr.io/v2/${{ env.IMAGE_NAME }}/manifests/$candidate"
+          }
+
+          FULL_EXISTS=false
+          SLIM_EXISTS=false
+
+          STATUS_FULL_PRIMARY=$(check_manifest_tag "$TAG")
+          STATUS_FULL_ALT=$(check_manifest_tag "$ALT_TAG")
+
+          # Treat existing unsuffixed full tag as full image presence.
+          if [ "$STATUS_FULL_PRIMARY" = "200" ] || [ "$STATUS_FULL_ALT" = "200" ]; then
+            FULL_EXISTS=true
+          fi
+
+          STATUS_SLIM_PRIMARY=$(check_manifest_tag "$TAG-slim")
+          STATUS_SLIM_ALT=$(check_manifest_tag "$ALT_TAG-slim")
+
+          if [ "$STATUS_SLIM_PRIMARY" = "200" ] || [ "$STATUS_SLIM_ALT" = "200" ]; then
+            SLIM_EXISTS=true
+          fi
+
+          echo "full_exists=$FULL_EXISTS" >> $GITHUB_OUTPUT
+          echo "slim_exists=$SLIM_EXISTS" >> $GITHUB_OUTPUT
+
+          if [ "$FULL_EXISTS" = "true" ]; then
+            echo "Full image already exists for tag: $TAG (or $ALT_TAG)"
+          else
+            echo "Full image not found for tag: $TAG (also checked $ALT_TAG)"
+          fi
+
+          if [ "$SLIM_EXISTS" = "true" ]; then
+            echo "Slim image already exists for tag: $TAG-slim (or $ALT_TAG-slim)"
+          else
+            echo "Slim image not found for tag: $TAG-slim (also checked $ALT_TAG-slim)"
+          fi
+
+      - name: Prepare full image tags
+        id: full_tags
+        if: steps.check.outputs.full_exists == 'false'
         run: |
           IMAGE_BASE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
           TAG="${{ steps.package_tag.outputs.tag }}"
@@ -130,15 +170,34 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Prepare slim image tags
+        id: slim_tags
+        if: steps.check.outputs.slim_exists == 'false'
+        run: |
+          IMAGE_BASE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
+          TAG="${{ steps.package_tag.outputs.tag }}"
+
+          {
+            echo "image_tags<<EOF"
+            echo "$IMAGE_BASE:$TAG-slim"
+
+            # Only automatic scheduled builds update :latest-slim.
+            if [ "${{ github.event_name }}" = "schedule" ]; then
+              echo "$IMAGE_BASE:latest-slim"
+            fi
+
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Checkout OpenClaw source
-        if: steps.check.outputs.exists == 'false'
+        if: steps.check.outputs.full_exists == 'false' || steps.check.outputs.slim_exists == 'false'
         uses: actions/checkout@v4
         with:
           repository: openclaw/openclaw
           ref: ${{ steps.package_tag.outputs.tag }}
 
       - name: Log in to GHCR
-        if: steps.check.outputs.exists == 'false'
+        if: steps.check.outputs.full_exists == 'false' || steps.check.outputs.slim_exists == 'false'
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
@@ -146,18 +205,30 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Docker Buildx
-        if: steps.check.outputs.exists == 'false'
+        if: steps.check.outputs.full_exists == 'false' || steps.check.outputs.slim_exists == 'false'
         uses: docker/setup-buildx-action@v3
 
-      - name: Build and push
-        if: steps.check.outputs.exists == 'false'
+      - name: Build and push full image
+        if: steps.check.outputs.full_exists == 'false'
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
-          tags: ${{ steps.tags.outputs.image_tags }}
+          tags: ${{ steps.full_tags.outputs.image_tags }}
           build-args: |
             OPENCLAW_INSTALL_BROWSER=1
             OPENCLAW_DOCKER_APT_PACKAGES=socat
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=full
+          cache-to: type=gha,mode=max,scope=full
+
+      - name: Build and push slim image
+        if: steps.check.outputs.slim_exists == 'false'
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.slim_tags.outputs.image_tags }}
+          build-args: |
+            OPENCLAW_INSTALL_BROWSER=0
+          cache-from: type=gha,scope=slim
+          cache-to: type=gha,mode=max,scope=slim

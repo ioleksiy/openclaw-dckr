@@ -11,10 +11,26 @@ Workflow: `.github/workflows/check-and-build.yml`
 - Checks upstream OpenClaw container package tags every 4 hours.
 - Picks the latest stable tag from `ghcr.io/openclaw/openclaw`.
 - Skips beta/pre-release package tags (based on the actual image tag that would be published).
-- Skips building if that tag already exists in GHCR.
-- Builds and pushes only when a new image is needed.
+- Skips building each image variant if that variant tag already exists in GHCR.
+- Builds and pushes only the missing variant(s): full and/or slim.
 
-## Standard build, plus small additions
+## Image variants
+
+This repo publishes two variants for each OpenClaw version:
+
+- Full image (default tag)
+  - `<version-tag>`
+  - Includes browser dependencies and `socat`.
+- Slim image
+  - `<version-tag>-slim`
+  - Excludes browser dependencies and additional apt packages.
+
+Only scheduled automatic builds also update:
+
+- `latest` (full)
+- `latest-slim` (slim)
+
+## Full image additions
 
 The image is built from upstream OpenClaw source and Docker setup, with these extra build args:
 
@@ -35,9 +51,10 @@ For this repository, it becomes:
 
 ## Tags behavior
 
-- Every successful build publishes the version tag (for example `v1.2.3`).
-- Only scheduled automatic builds also publish `latest`.
-- Manual runs do not move `latest`.
+- Every successful full build publishes the version tag (for example `v1.2.3`).
+- Every successful slim build publishes the slim tag (for example `v1.2.3-slim`).
+- Only scheduled automatic builds also publish `latest` and `latest-slim`.
+- Manual runs do not move `latest` or `latest-slim`.
 
 ## Manual run options
 
