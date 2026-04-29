@@ -8,9 +8,9 @@ The workflow follows the standard upstream OpenClaw Docker build process, then a
 
 Workflow: `.github/workflows/check-and-build.yml`
 
-- Checks OpenClaw releases every 4 hours.
-- Picks the latest stable release from `openclaw/openclaw`.
-- Skips beta releases.
+- Checks upstream OpenClaw container package tags every 4 hours.
+- Picks the latest stable tag from `ghcr.io/openclaw/openclaw`.
+- Skips beta/pre-release package tags (based on the actual image tag that would be published).
 - Skips building if that tag already exists in GHCR.
 - Builds and pushes only when a new image is needed.
 
@@ -44,7 +44,7 @@ For this repository, it becomes:
 You can run the workflow from the Actions UI with inputs:
 
 - `version` (optional): specific tag to build (example: `v1.0.0`).
-  - If empty, it resolves to the latest stable non-beta release.
+  - If empty, it resolves to the latest stable upstream package tag.
 - `force_rebuild` (optional, default `false`): build even if image tag already exists.
 
 Manual run steps:
@@ -58,6 +58,7 @@ Manual run steps:
 ## Safety checks
 
 - Beta tags are blocked.
+- Beta/pre-release detection is done on the final package/image tag, not only release metadata.
 - Tag format is validated before checkout/build.
 - Existing tags are checked in GHCR to avoid duplicate work (unless force rebuild is enabled).
 
