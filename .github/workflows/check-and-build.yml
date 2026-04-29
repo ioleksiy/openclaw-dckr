@@ -4,6 +4,16 @@ on:
   schedule:
     - cron: '0 */4 * * *' 
   workflow_dispatch:
+    inputs:
+      version:
+        description: 'OpenClaw version tag to build (for example: v1.0.0). Leave empty to use latest stable release.'
+        required: false
+        type: string
+      force_rebuild:
+        description: 'Build even when the image tag already exists in GHCR.'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -11,24 +21,56 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository_owner }}/openclaw-dckr
+  IMAGE_NAME: ${{ github.repository_owner }}/${{ github.event.repository.name }}
 
 jobs:
   check-and-build:
     runs-on: ubuntu-latest
     steps:
-      - name: Get latest stable release
+      - name: Resolve version to build
         id: release
         run: |
-          TAG=$(curl -s https://api.github.com/repos/openclaw/openclaw/releases \
-            | jq -r '[.[] | select(.prerelease == false) | select(.tag_name | test("beta"; "i") | not)] | first | .tag_name')
+          REQUESTED_TAG="${{ github.event.inputs.version }}"
+
+          if [ -n "$REQUESTED_TAG" ]; then
+            TAG="$REQUESTED_TAG"
+            echo "Using manually requested version: $TAG"
+          else
+            TAG=$(curl -s https://api.github.com/repos/openclaw/openclaw/releases \
+              | jq -r '[.[] | select(.prerelease == false) | select(.tag_name | test("beta"; "i") | not)] | first | .tag_name')
+            echo "Using latest stable release: $TAG"
+          fi
+
+          if [ -z "$TAG" ] || [ "$TAG" = "null" ]; then
+            echo "Failed to resolve an OpenClaw version tag" >&2
+            exit 1
+          fi
+
+          # Skip beta builds for both scheduled and manual runs.
+          if echo "$TAG" | grep -qi 'beta'; then
+            echo "Beta builds are not allowed: $TAG" >&2
+            exit 1
+          fi
+
+          # Enforce a sane tag shape to avoid accidental bad refs.
+          if ! echo "$TAG" | grep -Eq '^v?[0-9]+(\.[0-9]+){1,3}([.-][A-Za-z0-9]+)*$'; then
+            echo "Invalid tag format: $TAG" >&2
+            echo "Expected examples: v1.0.0, 1.0.0, v1.2.3-rc1" >&2
+            exit 1
+          fi
+
           echo "tag=$TAG" >> $GITHUB_OUTPUT
-          echo "Latest stable: $TAG"
 
       - name: Check if image already exists
         id: check
         run: |
-          TOKEN=$(echo "${{ secrets.GITHUB_TOKEN }}" | base64)
+          FORCE_REBUILD="${{ github.event.inputs.force_rebuild }}"
+          if [ "$FORCE_REBUILD" = "true" ]; then
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "Force rebuild enabled, will build regardless of current image"
+            exit 0
+          fi
+
           STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
             -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
             "https://ghcr.io/v2/${{ env.IMAGE_NAME }}/manifests/${{ steps.release.outputs.tag }}")
@@ -39,6 +81,25 @@ jobs:
             echo "exists=false" >> $GITHUB_OUTPUT
             echo "Image not found, will build"
           fi
+
+      - name: Prepare image tags
+        id: tags
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          IMAGE_BASE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
+          TAG="${{ steps.release.outputs.tag }}"
+
+          {
+            echo "image_tags<<EOF"
+            echo "$IMAGE_BASE:$TAG"
+
+            # Only automatic scheduled builds update :latest.
+            if [ "${{ github.event_name }}" = "schedule" ]; then
+              echo "$IMAGE_BASE:latest"
+            fi
+
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Checkout OpenClaw source
         if: steps.check.outputs.exists == 'false'
@@ -65,9 +126,7 @@ jobs:
         with:
           context: .
           push: true
-          tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.release.outputs.tag }}
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          tags: ${{ steps.tags.outputs.image_tags }}
           build-args: |
             OPENCLAW_INSTALL_BROWSER=1
             OPENCLAW_DOCKER_APT_PACKAGES=socat
