@@ -1,85 +1,80 @@
 # OpenClaw Docker Auto-Build
 
-This repository automatically builds OpenClaw Docker images and publishes them to GHCR.
+This repository builds OpenClaw Docker images and publishes them to GHCR.
 
-The workflow follows the standard upstream OpenClaw Docker build process, then adds a small set of practical defaults for container usage.
+Workflow file: `.github/workflows/check-and-build.yml`
+Workflow name: `Build Patched OpenClaw`
 
-## What this repo does
+## Build Flow (Current Behavior)
 
-Workflow: `.github/workflows/check-and-build.yml`
+The workflow runs every 4 hours and can also be started manually.
 
-- Checks upstream OpenClaw container package tags every 4 hours.
-- Picks the latest stable tag from `ghcr.io/openclaw/openclaw`.
-- Skips beta/pre-release package tags (based on the actual image tag that would be published).
-- Skips building each image variant if that variant tag already exists in GHCR.
-- Builds and pushes only the missing variant(s): full and/or slim.
+1. Resolve version tag to build
+- Uses manual `version` input if provided.
+- Otherwise resolves the latest stable upstream package tag from `ghcr.io/openclaw/openclaw`.
+- Falls back to `openclaw/openclaw` git tags via GitHub API if GHCR lookup fails.
 
-## Image variants
+2. Validate tag safety
+- Blocks pre-release tags (`alpha`, `beta`, `rc`, `preview`).
+- Requires tag format matching `^v?[0-9]+(\.[0-9]+){1,3}$`.
 
-This repo publishes two variants for each OpenClaw version:
+3. Resolve checkout ref
+- Checks upstream git tags for both forms (`v1.2.3` and `1.2.3`) and uses the first match.
 
-- Full image (default tag)
-  - `<version-tag>`
-  - Includes browser dependencies and `socat`.
-- Slim image
-  - `<version-tag>-slim`
-  - Excludes browser dependencies and additional apt packages.
+4. Check existing images in GHCR
+- Checks `full` (`<tag>`) and `slim` (`<tag>-slim`).
+- Also checks alternate tag form with/without `v`.
+- For runs that should update latest aliases, also verifies `latest` and `latest-slim` presence and digest match.
+- If `force_rebuild=true`, skips existence checks and rebuilds both variants.
 
-Only scheduled automatic builds also update:
+5. Build only missing variants
+- Full variant build args:
+  - `OPENCLAW_INSTALL_BROWSER=1`
+  - `OPENCLAW_DOCKER_APT_PACKAGES=socat`
+- Slim variant build args:
+  - `OPENCLAW_INSTALL_BROWSER=0`
 
-- `latest` (full)
-- `latest-slim` (slim)
+6. Optional post-build 1Password CLI layer
+- Unless `skip_1password=true`, adds a second layer that installs `1password-cli`.
+- Applied to each variant that was built in this run.
 
-## Full image additions
+7. Output summary and notifications
+- Writes image details to GitHub Step Summary.
+- Sends Slack success/failure notifications when `SLACK_WEBHOOK_URL` is set and at least one variant was built.
 
-The image is built from upstream OpenClaw source and Docker setup, with these extra build args:
+## Published Image Variants
 
-- `OPENCLAW_INSTALL_BROWSER=1`
-  - Includes browser dependencies in the image.
-- `OPENCLAW_DOCKER_APT_PACKAGES=socat`
-  - Adds `socat`, which is useful in many container networking and forwarding scenarios.
+- Full image: `<version-tag>`
+- Slim image: `<version-tag>-slim`
 
-## Image naming
+Image name is based on repository owner and name:
 
-Image name is automatic and based on owner + repository name:
+- `ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}:<tag>`
 
-- `ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}:<version-tag>`
+For this repo:
 
-For this repository, it becomes:
+- `ghcr.io/ioleksiy/openclaw-dckr:<tag>`
 
-- `ghcr.io/ioleksiy/openclaw-dckr:<version-tag>`
+## Tag Behavior
 
-## Tags behavior
+- Version tags are published for each variant that is built.
+- Scheduled runs always include latest aliases:
+  - `latest` (full)
+  - `latest-slim` (slim)
+- Manual runs include latest aliases only if `isLatest=true`.
+- Existing tags are skipped unless rebuild is required or `force_rebuild=true`.
 
-- Every successful full build publishes the version tag (for example `v1.2.3`).
-- Every successful slim build publishes the slim tag (for example `v1.2.3-slim`).
-- Only scheduled automatic builds also publish `latest` and `latest-slim`.
-- Manual runs do not move `latest` or `latest-slim`.
+## Manual Run Inputs
 
-## Manual run options
+From the Actions UI, open `Build Patched OpenClaw` and provide optional inputs:
 
-You can run the workflow from the Actions UI with inputs:
+- `version` (string): specific tag (example `v1.0.0`). Empty means latest stable upstream.
+- `isLatest` (boolean, default `false`): also publish `latest` and `latest-slim` for this manual run.
+- `force_rebuild` (boolean, default `false`): build even if tags already exist.
+- `skip_1password` (boolean, default `false`): skip the 1Password CLI layering steps.
 
-- `version` (optional): specific tag to build (example: `v1.0.0`).
-  - If empty, it resolves to the latest stable upstream package tag.
-- `force_rebuild` (optional, default `false`): build even if image tag already exists.
+## Permissions and Auth
 
-Manual run steps:
-
-1. Open **Actions**.
-2. Select **Build Custom OpenClaw**.
-3. Click **Run workflow**.
-4. Fill inputs as needed.
-5. Start the run.
-
-## Safety checks
-
-- Beta tags are blocked.
-- Beta/pre-release detection is done on the final package/image tag, not only release metadata.
-- Tag format is validated before checkout/build.
-- Existing tags are checked in GHCR to avoid duplicate work (unless force rebuild is enabled).
-
-## Permissions and auth
-
-- Requires `packages: write` permission.
-- Uses GitHub-provided `GITHUB_TOKEN` to authenticate to GHCR.
+- `contents: read`
+- `packages: write`
+- Uses `GITHUB_TOKEN` for GHCR auth and API calls.
