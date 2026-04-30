@@ -374,17 +374,25 @@ jobs:
         if: steps.check.outputs.full_exists == 'false' && github.event.inputs.skip_1password != 'true'
         run: |
           IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.package_tag.outputs.tag }}"
+          BASE_USER=$(docker image inspect "$IMAGE" --format '{{.Config.User}}')
+          if [ -z "$BASE_USER" ]; then
+            BASE_USER=root
+          fi
+
           cat > /tmp/Dockerfile.1password << 'EOF'
-          ARG BASE_IMAGE
+          ARG BASE_IMAGE=debian:bookworm-slim
           FROM ${BASE_IMAGE}
+          ARG BASE_USER=root
+          USER root
           RUN curl -sS https://downloads.1password.com/linux/keys/1password.asc | \
               gpg --dearmor > /usr/share/keyrings/1password-archive-keyring.gpg && \
               echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/1password-archive-keyring.gpg] https://downloads.1password.com/linux/debian/$(dpkg --print-architecture) stable main" > /etc/apt/sources.list.d/1password.list && \
               apt-get update && \
               apt-get install -y --no-install-recommends 1password-cli && \
               rm -rf /var/lib/apt/lists/*
+          USER ${BASE_USER}
           EOF
-          docker build --build-arg BASE_IMAGE=$IMAGE -f /tmp/Dockerfile.1password -t $IMAGE .
+          docker build --build-arg BASE_IMAGE=$IMAGE --build-arg BASE_USER=$BASE_USER -f /tmp/Dockerfile.1password -t $IMAGE .
           docker push $IMAGE
 
       - name: Add 1Password CLI layer (slim)
@@ -392,7 +400,12 @@ jobs:
         run: |
           SLIM_TAG="${{ steps.package_tag.outputs.tag }}-slim"
           IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${SLIM_TAG}"
-          docker build --build-arg BASE_IMAGE=$IMAGE -f /tmp/Dockerfile.1password -t $IMAGE .
+          BASE_USER=$(docker image inspect "$IMAGE" --format '{{.Config.User}}')
+          if [ -z "$BASE_USER" ]; then
+            BASE_USER=root
+          fi
+
+          docker build --build-arg BASE_IMAGE=$IMAGE --build-arg BASE_USER=$BASE_USER -f /tmp/Dockerfile.1password -t $IMAGE .
           docker push $IMAGE
 
       - name: Output image details
