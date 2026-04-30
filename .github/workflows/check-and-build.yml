@@ -374,6 +374,7 @@ jobs:
         if: steps.check.outputs.full_exists == 'false' && github.event.inputs.skip_1password != 'true'
         run: |
           IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.package_tag.outputs.tag }}"
+          docker pull "$IMAGE"
           BASE_USER=$(docker image inspect "$IMAGE" --format '{{.Config.User}}')
           if [ -z "$BASE_USER" ]; then
             BASE_USER=root
@@ -392,7 +393,7 @@ jobs:
               rm -rf /var/lib/apt/lists/*
           USER ${BASE_USER}
           EOF
-          docker build --build-arg BASE_IMAGE=$IMAGE --build-arg BASE_USER=$BASE_USER -f /tmp/Dockerfile.1password -t $IMAGE .
+            docker build --build-arg BASE_IMAGE="$IMAGE" --build-arg BASE_USER="$BASE_USER" -f /tmp/Dockerfile.1password -t "$IMAGE" .
           docker push $IMAGE
 
       - name: Add 1Password CLI layer (slim)
@@ -400,12 +401,13 @@ jobs:
         run: |
           SLIM_TAG="${{ steps.package_tag.outputs.tag }}-slim"
           IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${SLIM_TAG}"
+          docker pull "$IMAGE"
           BASE_USER=$(docker image inspect "$IMAGE" --format '{{.Config.User}}')
           if [ -z "$BASE_USER" ]; then
             BASE_USER=root
           fi
 
-          docker build --build-arg BASE_IMAGE=$IMAGE --build-arg BASE_USER=$BASE_USER -f /tmp/Dockerfile.1password -t $IMAGE .
+          docker build --build-arg BASE_IMAGE="$IMAGE" --build-arg BASE_USER="$BASE_USER" -f /tmp/Dockerfile.1password -t "$IMAGE" .
           docker push $IMAGE
 
       - name: Output image details
