@@ -374,6 +374,11 @@ jobs:
         if: steps.check.outputs.full_exists == 'false' && github.event.inputs.skip_1password != 'true'
         run: |
           IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.package_tag.outputs.tag }}"
+          IS_LATEST=false
+          if [[ "${{ github.event_name }}" == "schedule" || "${{ github.event.inputs.isLatest }}" == "true" ]]; then
+            IS_LATEST=true
+          fi
+
           docker pull "$IMAGE"
           BASE_USER=$(docker image inspect "$IMAGE" --format '{{.Config.User}}')
           if [ -z "$BASE_USER" ]; then
@@ -396,21 +401,56 @@ jobs:
           USER ${BASE_USER}
           EOF
             docker build --build-arg BASE_IMAGE="$IMAGE" --build-arg BASE_USER="$BASE_USER" -f /tmp/Dockerfile.1password -t "$IMAGE" .
-          docker push $IMAGE
+          docker push "$IMAGE"
+
+          if [ "$IS_LATEST" = "true" ]; then
+            LATEST_IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
+            docker tag "$IMAGE" "$LATEST_IMAGE"
+            docker push "$LATEST_IMAGE"
+          fi
 
       - name: Add 1Password CLI layer (slim)
         if: steps.check.outputs.slim_exists == 'false' && github.event.inputs.skip_1password != 'true'
         run: |
           SLIM_TAG="${{ steps.package_tag.outputs.tag }}-slim"
           IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${SLIM_TAG}"
+          IS_LATEST=false
+          if [[ "${{ github.event_name }}" == "schedule" || "${{ github.event.inputs.isLatest }}" == "true" ]]; then
+            IS_LATEST=true
+          fi
+
           docker pull "$IMAGE"
           BASE_USER=$(docker image inspect "$IMAGE" --format '{{.Config.User}}')
           if [ -z "$BASE_USER" ]; then
             BASE_USER=root
           fi
 
+          if [ ! -f /tmp/Dockerfile.1password ]; then
+            cat > /tmp/Dockerfile.1password << 'EOF'
+          ARG BASE_IMAGE=debian:bookworm-slim
+          FROM ${BASE_IMAGE}
+          ARG BASE_USER=root
+          USER root
+            RUN apt-get update && \
+              apt-get install -y --no-install-recommends ca-certificates curl gnupg && \
+              curl -sS https://downloads.1password.com/linux/keys/1password.asc | \
+              gpg --dearmor -o /usr/share/keyrings/1password-archive-keyring.gpg && \
+              echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/1password-archive-keyring.gpg] https://downloads.1password.com/linux/debian/$(dpkg --print-architecture) stable main" > /etc/apt/sources.list.d/1password.list && \
+              apt-get update && \
+              apt-get install -y --no-install-recommends 1password-cli && \
+              rm -rf /var/lib/apt/lists/*
+          USER ${BASE_USER}
+          EOF
+          fi
+
           docker build --build-arg BASE_IMAGE="$IMAGE" --build-arg BASE_USER="$BASE_USER" -f /tmp/Dockerfile.1password -t "$IMAGE" .
-          docker push $IMAGE
+          docker push "$IMAGE"
+
+          if [ "$IS_LATEST" = "true" ]; then
+            LATEST_IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest-slim"
+            docker tag "$IMAGE" "$LATEST_IMAGE"
+            docker push "$LATEST_IMAGE"
+          fi
 
       - name: Output image details
         if: success()
