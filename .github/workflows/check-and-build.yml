@@ -352,6 +352,8 @@ jobs:
           context: .
           push: true
           tags: ${{ steps.full_tags.outputs.image_tags }}
+          provenance: false
+          sbom: false
           build-args: |
             OPENCLAW_INSTALL_BROWSER=1
             OPENCLAW_DOCKER_APT_PACKAGES=socat
@@ -365,6 +367,8 @@ jobs:
           context: .
           push: true
           tags: ${{ steps.slim_tags.outputs.image_tags }}
+          provenance: false
+          sbom: false
           build-args: |
             OPENCLAW_INSTALL_BROWSER=0
           cache-from: type=gha,scope=slim
@@ -594,3 +598,46 @@ jobs:
                 }
               ]
             }
+
+      - name: Auto-clean untagged GHCR versions
+        if: always()
+        continue-on-error: true
+        run: |
+          OWNER="${{ github.repository_owner }}"
+          PACKAGE="${{ github.event.repository.name }}"
+          API_ROOT="https://api.github.com"
+
+          GH_TYPE=$(curl -fsSL \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            "$API_ROOT/users/$OWNER" | jq -r '.type // empty')
+
+          if [ "$GH_TYPE" = "Organization" ]; then
+            SCOPE="orgs"
+          else
+            SCOPE="users"
+          fi
+
+          echo "Cleaning untagged GHCR versions for $SCOPE/$OWNER package $PACKAGE"
+
+          VERSIONS=$(curl -fsSL \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            "$API_ROOT/$SCOPE/$OWNER/packages/container/$PACKAGE/versions?per_page=100")
+
+          UNTAGGED_IDS=$(echo "$VERSIONS" | jq -r '.[] | select((.metadata.container.tags | length) == 0) | .id')
+
+          if [ -z "$UNTAGGED_IDS" ]; then
+            echo "No untagged package versions found"
+            exit 0
+          fi
+
+          echo "$UNTAGGED_IDS" | while read -r VERSION_ID; do
+            if [ -n "$VERSION_ID" ]; then
+              echo "Deleting untagged package version id=$VERSION_ID"
+              curl -fsSL -X DELETE \
+                -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+                -H "Accept: application/vnd.github+json" \
+                "$API_ROOT/$SCOPE/$OWNER/packages/container/$PACKAGE/versions/$VERSION_ID" >/dev/null
+            fi
+          done
