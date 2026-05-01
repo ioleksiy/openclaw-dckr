@@ -84,19 +84,23 @@ jobs:
       - name: Validate package tag
         id: package_tag
         run: |
-          TAG="${{ steps.release.outputs.tag }}"
+          RAW_TAG="${{ steps.release.outputs.tag }}"
 
           # Check the tag we will actually publish as a package/image tag.
-          if echo "$TAG" | grep -Eqi '(beta|alpha|rc|preview)'; then
-            echo "Pre-release package tag is not allowed: $TAG" >&2
+          if echo "$RAW_TAG" | grep -Eqi '(beta|alpha|rc|preview)'; then
+            echo "Pre-release package tag is not allowed: $RAW_TAG" >&2
             exit 1
           fi
 
-          if ! echo "$TAG" | grep -Eq '^v?[0-9]+(\.[0-9]+){1,3}$'; then
-            echo "Invalid package tag format: $TAG" >&2
+          if ! echo "$RAW_TAG" | grep -Eq '^v?[0-9]+(\.[0-9]+){1,3}$'; then
+            echo "Invalid package tag format: $RAW_TAG" >&2
             echo "Expected examples: v1.0.0, 1.0.0, v1.2.3" >&2
             exit 1
           fi
+
+          # Normalize package tag format so all published tags are always v-prefixed.
+          TAG="v${RAW_TAG#v}"
+          echo "Normalized package tag: $TAG"
 
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
